@@ -240,7 +240,11 @@ inline double pass_generation_probability(const Vertex &v0, const Vertex &v1) {
 			return 1.0 / PI;
 		else {
 			const Vec dir = Normalize(v1.position - v0.position);
-			return 1.0 / (2.0 * PI * Dot(v0.normal, dir));
+			const double dot = Dot(v0.normal, dir);
+			if (dot <= 0.0) {
+				return 0.0;
+			}
+			return 1.0 / (2.0 * PI * dot);
 		}
 	} break;
 	case SPECULAR: {
@@ -260,11 +264,12 @@ inline double geometry_term(const Vertex &v0, const Vertex &v1) {
 	// v0 <-> v1 の可視判定
 	const double dist = (v1.position - v0.position).LengthSquared();
 	const Vec to0 = Normalize(v1.position - v0.position);
+	const Vec to1 = Normalize(v0.position - v1.position);
 	intersect_scene(Ray(v0.position, to0), &t, &id);
+	const double c0 = Dot(v0.normal, to0);
+	const double c1 = Dot(v1.normal, to1);
 
-	if (Dot(to0, v0.normal) >= 0 && fabs(sqrt(dist) - t) < EPS) {
-		const double c0 = Dot(v0.normal, Normalize(v1.position - v0.position));
-		const double c1 = Dot(v1.normal, Normalize(v0.position - v1.position));
+	if (c0 >= 0 && c1 >= 0 && fabs(sqrt(dist) - t) < EPS) {
 		return c0 * c1 / dist;
 	} else {
 		return 0.0;
@@ -454,24 +459,40 @@ Color radiance(const Ray &camera, const Ray &ray, const int depth, int *used_sam
 
 			// s = 0: Lightサブパスの長さが0の場合はちょっと特殊なので別処理する
 			if (s == 0) {
-				p[1] = p[0] * PA_light / (pass_generation_probability(*xs[1], *xs[0]) * geometry_term(*xs[1], *xs[0]));
+				p[1] = p[0] * PA_light / (pass_generation_probability(*xs[1], *xs[0]) * gcache.calc(idx[1], idx[0]));
+				if (p[1] > INF) {
+					p[1] = 0.0;
+				}
+				
 				for (int i = s + 1; i < k; i ++) {
+					const double denom = gcache.calc(idx[i + 1], idx[i]) * pass_generation_probability(*xs[i + 1], *xs[i]);
 					p[i + 1] = p[i] * gcache.calc(idx[i - 1], idx[i]) * pass_generation_probability(*xs[i - 1], *xs[i])
- 									/(gcache.calc(idx[i + 1], idx[i]) * pass_generation_probability(*xs[i + 1], *xs[i]));
+ 									/ denom;
+					if (denom <= 0.0) {
+						p[i + 1] = 0.0;
+					}
 				}
 				if (k - 1 >= 0) 
 					p[k+1] = p[k] * gcache.calc(idx[k - 1], idx[k]) * pass_generation_probability(*xs[k - 1], *xs[k]) / PA_eye;
 			} else {
 				for (int i = s; i < k; i ++) {
+					const double denom = gcache.calc(idx[i + 1], idx[i]) * pass_generation_probability(*xs[i + 1], *xs[i]);
 					p[i + 1] = p[i] * gcache.calc(idx[i - 1], idx[i]) * pass_generation_probability(*xs[i - 1], *xs[i])
  									/(gcache.calc(idx[i + 1], idx[i]) * pass_generation_probability(*xs[i + 1], *xs[i]));
+					if (denom <= 0.0) {
+						p[i + 1] = 0.0;
+					}
 				}
 				if (k - 1 >= 0) 
 					p[k+1] = p[k] * gcache.calc(idx[k - 1], idx[k]) * pass_generation_probability(*xs[k - 1], *xs[k]) / PA_eye;
 
 				for (int i = s - 1; i > 0; i --) {
+					const double denom = gcache.calc(idx[i - 1], idx[i]) * pass_generation_probability(*xs[i - 1], *xs[i]);
 					p[i] = p[i + 1] * gcache.calc(idx[i + 1], idx[i]) * pass_generation_probability(*xs[i + 1], *xs[i])
-									/(gcache.calc(idx[i - 1], idx[i]) * pass_generation_probability(*xs[i - 1], *xs[i]));
+									/ denom;
+					if (denom <= 0.0) {
+						p[i] = 0.0;
+					}
 				}
 				if (s > 0) 
 					p[0] = p[1] * gcache.calc(idx[1], idx[0]) * pass_generation_probability(*xs[1], *xs[0]) / PA_light;
@@ -493,6 +514,10 @@ Color radiance(const Ray &camera, const Ray &ray, const int depth, int *used_sam
 			}
 			if (w != 0.0)
 				weight[s * (NE+1) + t] = 1.0 / w;
+			
+			if (_isnan(weight[s * (NE+1) + t])) {
+				std::cout << w << " ";
+			}
 		}
 	}
 	
@@ -503,6 +528,7 @@ Color radiance(const Ray &camera, const Ray &ray, const int depth, int *used_sam
 		for (int t = 1; t < NE+1; t ++) {
 			if (weight[s * (NE+1) + t] > 0.0)	
 				(*used_sample) ++;
+
 			accum = accum + weight[s * (NE+1) + t] * Multiply(Multiply(alpha_L[s], c[s * (NE+1) + t]), alpha_E[t]);
 		}
 	}
@@ -587,6 +613,7 @@ int main(int argc, char **argv) {
 	Vec cy = Normalize(Cross(cx, camera.dir)) * 0.5135;
 	Color *image = new Color[width * height];
 	
+//#pragma omp parallel for schedule(dynamic, 1)
 	for (int y = 0; y < height; y ++) {
 		int used_sample = 0;
 		for (int x = 0; x < width; x ++) {
