@@ -392,6 +392,8 @@ Color radiance(const Ray &camera, const Ray &ray, const int depth, int *used_sam
 	// t = 0: Eyeサブパスにおける頂点数が0
 	for (int s = 1; s < NL+1; s ++) {
 		// 今回スクリーンは当たり判定ないので全部0
+		// ほんとはここをちゃんと考慮しないといけない
+		// Fix me
 		c[s * (NE+1) + 0] = Color(0.0, 0.0, 0.0);
 	}
 	
